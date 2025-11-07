@@ -42,6 +42,91 @@ if not inputs:
 #
 #------------------------------------------------------------------------------
 
+def standardize_code(code, is_python=True):
+    """Standardize code by removing whitespace and comments"""
+    import re
+    
+    # Remove comments
+    if is_python:
+        # Python comments
+        code = re.sub(r'#.*', '', code)
+    else:
+        # C/C++ comments
+        code = re.sub(r'//.*', '', code)  # Single line comments
+        code = re.sub(r'\/\*.*?\*\/', '', code, flags=re.DOTALL)  # Multi-line comments
+    
+    # Remove whitespace
+    code = re.sub(r'\s+', '', code)
+    
+    return code
+
+def extract_structural_features(code, is_python=True):
+    """Extract structural features from code"""
+    import re
+    
+    # Define structural features to extract
+    if is_python:
+        # Python structural features
+        features = []
+        # Extract control flow keywords
+        features.extend(re.findall(r'\b(if|else|elif|for|while|try|except|finally|return|break|continue|def|class)\b', code))
+        # Extract operators
+        features.extend(re.findall(r'([=+\-*/%&|^!~<>])', code))
+    else:
+        # C/C++ structural features
+        features = []
+        # Extract control flow keywords
+        features.extend(re.findall(r'\b(if|else|for|while|do|switch|case|default|return|break|continue|int|float|double|char|void|struct|class)\b', code))
+        # Extract operators
+        features.extend(re.findall(r'([=+\-*/%&|^!~<>])', code))
+    
+    return features
+
+def calculate_structural_similarity(features1, features2):
+    """Calculate structural similarity between two feature lists"""
+    from difflib import SequenceMatcher as SM
+    
+    if not features1 and not features2:
+        return 1.0
+    
+    # Convert feature lists to strings for comparison
+    str1 = ' '.join(features1)
+    str2 = ' '.join(features2)
+    
+    return SM(None, str1, str2).ratio()
+
+def extract_identifiers(code, is_python=True):
+    """Extract variable names and function names from code"""
+    import re
+    
+    if is_python:
+        # Extract Python identifiers
+        identifiers = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', code)
+        # Filter out keywords
+        keywords = {'if', 'else', 'elif', 'for', 'while', 'try', 'except', 'finally', 'return', 'break', 'continue', 'def', 'class', 'import', 'from', 'as', 'pass', 'print', 'input', 'range', 'len', 'str', 'int', 'float', 'bool', 'list', 'dict', 'set', 'tuple'}
+        identifiers = [id for id in identifiers if id not in keywords]
+    else:
+        # Extract C/C++ identifiers
+        identifiers = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', code)
+        # Filter out keywords
+        keywords = {'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'return', 'break', 'continue', 'int', 'float', 'double', 'char', 'void', 'struct', 'class', 'include', 'define', 'typedef', 'const', 'static', 'volatile', 'auto', 'register', 'extern'}
+        identifiers = [id for id in identifiers if id not in keywords]
+    
+    return identifiers
+
+def calculate_semantic_similarity(identifiers1, identifiers2):
+    """Calculate semantic similarity between two identifier lists"""
+    from difflib import SequenceMatcher as SM
+    
+    if not identifiers1 and not identifiers2:
+        return 1.0
+    
+    # Convert identifier lists to strings for comparison
+    str1 = ' '.join(identifiers1)
+    str2 = ' '.join(identifiers2)
+    
+    return SM(None, str1, str2).ratio()
+
 def spinning_cursor():
     while True:
       for cursor in ['[|]','[/]','[-]','[\\]']:
@@ -103,23 +188,48 @@ def process_py(fn, line, ln, indent):
        print(' [%s]' % ('.' * len(stack)), line, end='')
     #end
 
+    # Check if this line defines a function or class
+    stripped_line = line.strip()
+    is_def = stripped_line.startswith('def ') or stripped_line.startswith('class ')
+    
+    # Handle function/class definitions specially
+    if is_def:
+        # Close any existing block at the same indentation level
+        while len(stack) > 1:
+            current_block = stack[-1]
+            if current_block.indent < indent:
+                break
+            # Close the current block
+            current_block.range[1] = ln
+            stack.pop()
+        
+        # Create a new block for the function/class
+        top = stack[-1]
+        b = block(fn, ln, indent, top)
+        b.add_code(line)
+        stack.append(b)
+        blocks.append(b)
+        return
+    
+    # Handle non-definition lines
     top = stack[-1]
-
-    if not line.rstrip() or line[indent] in ['#','"',"'"]:
+    
+    if not line.rstrip() or (indent < len(line) and line[indent] in ['#','"',"'"]):
        top.add_code(line)
        return
     #end
-
-    if indent == top.indent: top.add_code(line)
-
-    if indent > top.indent:
+    
+    if indent == top.indent:
+        top.add_code(line)
+    
+    elif indent > top.indent:
        b = block(fn, ln, indent, top)
        b.add_code(line)
        stack.append(b)
        blocks.append(b)
     #end
 
-    if indent < top.indent:
+    elif indent < top.indent:
        if not stack:
           print('[!] %s:%d' % (fn, ln)) # error
           return False
@@ -195,7 +305,7 @@ def process_ch(fn, ch, ln):
           return False
        b = stack.pop()
        b.range[1] = ln
-       top = stack[-1] if stack else 0
+       top = stack[-1] if stack else None
     #end
 
     if top: top.add_code(ch)
@@ -300,7 +410,7 @@ if args.p or args.b:
           print('-'*hlen)
           print('%s:%d - %d'%(b.file,b.range[0],b.indent))
           print('-'*hlen)
-          for line in b.code: print(line,end="")
+          print(b.code, end="")
           print()
       #end
    #end
@@ -405,10 +515,39 @@ for k in keys:
          # skip if blocks are not on the same indent
          if not args.all_indents and bi.indent != bj.indent: continue
 
+         # Determine language for each block individually
+         is_python_bi = bi.file.endswith('.py') or args.python
+         is_python_bj = bj.file.endswith('.py') or args.python
+         
+         # Standardize code
+         std_bi = standardize_code(bi.code, is_python_bi)
+         std_bj = standardize_code(bj.code, is_python_bj)
+         
+         # Extract structural features
+         features_bi = extract_structural_features(bi.code, is_python_bi)
+         features_bj = extract_structural_features(bj.code, is_python_bj)
+         
+         # Extract identifiers
+         ids_bi = extract_identifiers(bi.code, is_python_bi)
+         ids_bj = extract_identifiers(bj.code, is_python_bj)
+         
+         # Calculate structural similarity
+         structural_sim = calculate_structural_similarity(features_bi, features_bj)
+         
+         # Calculate semantic similarity
+         semantic_sim = calculate_semantic_similarity(ids_bi, ids_bj)
+         
+         # Combine similarities
+         combined_sim = (structural_sim + semantic_sim) / 2
+         
          # do the comparison (skip if blocks are not similar)
          sm = SM(None, bi.code, bj.code)
          if sm.quick_ratio() < args.similarity: continue
          if sm.ratio()       < args.similarity: continue
+         
+         # Additional filtering based on structural and semantic similarity
+         if structural_sim < args.similarity: continue
+         if semantic_sim < args.similarity: continue
 
          # found similar blocks - add their children to the skip list
          skip_children(bi); skip_children(bj)
@@ -548,10 +687,32 @@ def diff2html(df, bi, bj, index):
 
 prints('post processing')
 
-DN = '2>/dev/null'
-root = '/tmp/refactor-%d' % os.getpid()
-os.system('mkdir -p %s/diffs' % root)
-os.system('mkdir -p %s/files' % root)
+import platform
+
+# Determine the operating system
+is_windows = platform.system() == 'Windows'
+
+# Set up platform-specific commands and paths
+if is_windows:
+    DN = '2>NUL'
+    root = 'C:\\temp\\refactor-%d' % os.getpid()
+    mkdir_cmd = 'mkdir "%s" 2>NUL'
+    diff_cmd = 'fc /t "%s" "%s" > "%s"'
+    cat_cmd = 'type "%s" > "%s" %s'
+    rm_cmd = 'rmdir /s /q "%s"'
+    path_sep = '\\'
+else:
+    DN = '2>/dev/null'
+    root = '/tmp/refactor-%d' % os.getpid()
+    mkdir_cmd = 'mkdir -p %s'
+    diff_cmd = 'diff -t -y --width=%d %s %s > %s'
+    cat_cmd = 'cat %s > %s %s'
+    rm_cmd = 'rm -rf %s'
+    path_sep = '/'
+
+# Create directories
+os.system(mkdir_cmd % (root + path_sep + 'diffs'))
+os.system(mkdir_cmd % (root + path_sep + 'files'))
 
 def dash(fname): return fname.replace('/', '-')
 
@@ -567,9 +728,11 @@ for (bi, bj) in similar:
     with open(bifn, 'w') as f: f.write(bi.code)
     with open(bjfn, 'w') as f: f.write(bj.code)
 
-    dif = '%s/diffs/%d.diff' % (root, index)
-    cmd = 'diff -t -y --width=%d %s %s > %s'
-    cmd = cmd % (args.diff_width, bifn, bjfn, dif)
+    dif = '%s%s%s%s%d.diff' % (root, path_sep, 'diffs', path_sep, index)
+    if is_windows:
+        cmd = diff_cmd % (bifn, bjfn, dif)
+    else:
+        cmd = diff_cmd % (args.diff_width, bifn, bjfn, dif)
     os.system(cmd)
 
     htf = dif.replace('.diff', '.html')
@@ -592,10 +755,11 @@ output = ('refactor-%d.html' % os.getpid())
 
 if args.output: output = args.output
 
-cmd = 'cat %s/diffs/*.html > %s %s ' % (root, output, DN)
+diffs_path = '%s%s%s%s*.html' % (root, path_sep, 'diffs', path_sep)
+cmd = cat_cmd % (diffs_path, output, DN)
 os.system(cmd)
 print('>', output)
 
-if not args.no_cleanup: os.system('rm -rf %s' % root)
+if not args.no_cleanup: os.system(rm_cmd % root)
 
 
